@@ -30,6 +30,14 @@ logger = init_logger(__name__)
 
 _PAD_SLOT_ID = -1
 
+        
+try:
+    import intel_extension_for_pytorch as ipex
+    _import_ipex = True
+except ImportError as e:
+    logger.warning("Import Error for IPEX: %s", e.msg)
+    _import_ipex = False
+
 
 @dataclass(frozen=True)
 class CPUModelInput(ModelRunnerInputBase):
@@ -204,6 +212,13 @@ class CPUModelRunner(ModelRunnerBase[CPUModelInput]):
                                     dtype=torch.long,
                                     device=self.device)  # type: ignore
 
+        if _import_ipex:
+            max_seqlen = max(seq_lens)
+            tmp = [0]
+            tmp.extend(seq_lens)
+            seqlen = torch.tensor(tmp)
+            seqlen_q = torch.cumsum(seqlen, dim=0).to(device=self.device)
+
         attn_metadata = self.attn_backend.make_metadata(
             is_prompt=True,
             seq_lens=seq_lens,
@@ -214,6 +229,7 @@ class CPUModelRunner(ModelRunnerBase[CPUModelInput]):
             num_decode_tokens=0,
             block_tables=torch.tensor([]),
             slot_mapping=slot_mapping,
+            **({"seqlen_q": seqlen_q, "max_seqlen": max_seqlen} if _import_ipex else {}),
         )
 
         multi_modal_kwargs = MultiModalInputs.batch(multi_modal_inputs_list)
@@ -285,6 +301,13 @@ class CPUModelRunner(ModelRunnerBase[CPUModelInput]):
             device=self.device,
         )
 
+        if _import_ipex:
+            max_seqlen = max(seq_lens)
+            tmp = [0]
+            tmp.extend(seq_lens)
+            seqlen = torch.tensor(tmp)
+            seqlen_q = torch.cumsum(seqlen, dim=0).to(device=self.device)
+
         attn_metadata = self.attn_backend.make_metadata(
             is_prompt=False,
             slot_mapping=slot_mapping,
@@ -295,6 +318,7 @@ class CPUModelRunner(ModelRunnerBase[CPUModelInput]):
             num_decode_tokens=len(input_tokens),
             num_prefills=0,
             block_tables=block_tables,
+            **({"seqlen_q": seqlen_q, "max_seqlen": max_seqlen} if _import_ipex else {}),
         )
         return (
             input_tokens,

@@ -133,8 +133,8 @@ def get_attn_backend(
         from vllm.attention.backends.openvino import OpenVINOAttentionBackend
         return OpenVINOAttentionBackend
     elif backend == _Backend.IPEX:
-        assert is_xpu(), RuntimeError(
-            "IPEX attention backend is only used for the XPU device.")
+        assert is_xpu() or is_cpu(), RuntimeError(
+            "IPEX attention backend is only used for the XPU or CPU device.")
         logger.info("Using IPEX attention backend.")
         from vllm.attention.backends.ipex_attn import IpexAttnBackend
         return IpexAttnBackend
@@ -179,9 +179,14 @@ def which_attn_to_use(
             selected_backend = backend_name_to_enum(backend_by_env_var)
 
     if is_cpu():
-        if selected_backend != _Backend.TORCH_SDPA:
+        if selected_backend != _Backend.TORCH_SDPA and selected_backend != _Backend.IPEX :
             logger.info("Cannot use %s backend on CPU.", selected_backend)
-        return _Backend.TORCH_SDPA
+        try:
+            import intel_extension_for_pytorch as ipex
+            return _Backend.IPEX
+        except ImportError as e:
+            logger.warning("Import Error for IPEX: %s", e.msg)
+            return _Backend.TORCH_SDPA
 
     if is_openvino():
         if selected_backend != _Backend.OPENVINO:

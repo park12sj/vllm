@@ -1,10 +1,12 @@
 from typing import List, Optional, Tuple
+from importlib.metadata import PackageNotFoundError, version
 
 import torch
 
 from vllm.logger import init_logger
 
 logger = init_logger(__name__)
+is_xpu_flag = "xpu" in version("vllm")
 
 try:
     import intel_extension_for_pytorch as ipex
@@ -58,9 +60,9 @@ class ipex_ops:
         num_kv_heads: int,
         scale: float,
         block_tables: torch.Tensor,
-        context_lens: torch.Tensor,
+        seq_lens: torch.Tensor,
         block_size: int,
-        max_context_len: int,
+        max_seq_len: int,
         alibi_slopes: Optional[torch.Tensor],
         kv_cache_dtype: str,
         k_scale: float,
@@ -82,19 +84,27 @@ class ipex_ops:
         ).view(num_kv_heads,
                1).repeat_interleave(num_queries_per_tokens).flatten()
         # todo: ipex will refactor namespace
-        torch.xpu.paged_attention_v1(  # type: ignore
-            out,
-            query.contiguous(),
-            key_cache.view_as(value_cache),
-            value_cache,
-            head_mapping,
-            scale,
-            block_tables,
-            context_lens,
-            block_size,
-            max_context_len,
-            alibi_slopes,
-        )
+        if is_xpu_flag:
+            torch.xpu.paged_attention_v1(  # type: ignore
+                out,
+                query.contiguous(),
+                key_cache.view_as(value_cache),
+                value_cache,
+                head_mapping,
+                scale,
+                block_tables,
+                seq_lens,
+                block_size,
+                max_seq_len,
+                alibi_slopes,
+            )
+        else:
+            torch.ops._C.paged_attention_v1(
+                out, query, key_cache, value_cache, num_kv_heads, scale, block_tables,
+                seq_lens, block_size, max_seq_len, alibi_slopes, kv_cache_dtype,
+                k_scale, v_scale, tp_rank, blocksparse_local_blocks,
+                blocksparse_vert_stride, blocksparse_block_size,
+                blocksparse_head_sliding_step)
 
     @staticmethod
     def paged_attention_v2(
@@ -108,9 +118,9 @@ class ipex_ops:
         num_kv_heads: int,
         scale: float,
         block_tables: torch.Tensor,
-        context_lens: torch.Tensor,
+        seq_lens: torch.Tensor,
         block_size: int,
-        max_context_len: int,
+        max_seq_len: int,
         alibi_slopes: Optional[torch.Tensor],
         kv_cache_dtype: str,
         k_scale: float,
@@ -132,22 +142,30 @@ class ipex_ops:
         ).view(num_kv_heads,
                1).repeat_interleave(num_queries_per_tokens).flatten()
         # todo: ipex will refactor namespace
-        torch.xpu.paged_attention_v2(  # type: ignore
-            out,
-            exp_sum,
-            max_logits,
-            tmp_out,
-            query.contiguous(),
-            key_cache.view_as(value_cache),
-            value_cache,
-            head_mapping,
-            block_tables,
-            context_lens,
-            scale,
-            block_size,
-            max_context_len,
-            alibi_slopes,
-        )
+        if is_xpu_flag:
+            torch.xpu.paged_attention_v2(  # type: ignore
+                out,
+                exp_sum,
+                max_logits,
+                tmp_out,
+                query.contiguous(),
+                key_cache.view_as(value_cache),
+                value_cache,
+                head_mapping,
+                block_tables,
+                seq_lens,
+                scale,
+                block_size,
+                max_seq_len,
+                alibi_slopes,
+            )
+        else:
+            torch.ops._C.paged_attention_v2(
+                out, exp_sum, max_logits, tmp_out, query, key_cache, value_cache,
+                num_kv_heads, scale, block_tables, seq_lens, block_size, max_seq_len,
+                alibi_slopes, kv_cache_dtype, k_scale, v_scale, tp_rank,
+                blocksparse_local_blocks, blocksparse_vert_stride,
+                blocksparse_block_size, blocksparse_head_sliding_step)
 
     @staticmethod
     def rotary_embedding(
@@ -231,13 +249,19 @@ class ipex_ops:
     def copy_blocks(key_caches: List[torch.Tensor],
                     value_caches: List[torch.Tensor],
                     block_mapping: torch.Tensor) -> None:
-        torch.xpu.copy_blocks(  # type: ignore
-            key_caches,
-            value_caches,
-            block_mapping,
-        )
+        if is_xpu_flag:
+            torch.xpu.copy_blocks(  # type: ignore
+                key_caches,
+                value_caches,
+                block_mapping,
+            )
+        else:
+            torch.ops._C_cache_ops.copy_blocks(key_caches, value_caches, block_mapping)
 
     @staticmethod
     def swap_blocks(src: torch.Tensor, dst: torch.Tensor,
                     block_mapping: torch.Tensor) -> None:
-        torch.xpu.swap_blocks(src, dst, block_mapping)  # type: ignore
+        if is_xpu_flag:
+            torch.xpu.swap_blocks(src, dst, block_mapping)  # type: ignore
+        else:
+            torch.ops._C_cache_ops.swap_blocks(src, dst, block_mapping)
